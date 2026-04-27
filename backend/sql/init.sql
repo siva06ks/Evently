@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS events (
+  id SERIAL PRIMARY KEY,
+  title VARCHAR(120) NOT NULL,
+  organizer_email VARCHAR(120) NOT NULL,
+  event_date DATE NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);

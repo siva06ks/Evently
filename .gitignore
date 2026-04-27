@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# OS & editors
+.DS_Store
+Thumbs.db
+.idea/
+*.log
+
+# Local / secrets
+.env
+.env.*.local
+
+# Cursor (optional local state — remove line if you want to commit .cursor)
+.cursor/

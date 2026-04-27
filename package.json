@@ -1,0 +1,17 @@
+{
+  "name": "evently",
+  "version": "1.0.0",
+  "description": "Evently monorepo (React Native + Node + Postgres)",
+  "scripts": {
+    "mobile": "npm run start --prefix mobile",
+    "backend": "npm run dev --prefix backend",
+    "dev": "concurrently \"npm run backend\" \"npm run mobile\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
