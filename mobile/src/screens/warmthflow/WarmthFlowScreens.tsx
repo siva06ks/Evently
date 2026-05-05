@@ -1,8 +1,26 @@
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { useFocusEffect } from "@react-navigation/native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { useEffect, useMemo, useState } from "react";
-import { Alert, Image, Pressable, Share, StyleSheet, Text, TextInput, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Linking,
+  Platform,
+  Pressable,
+  Share,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import { WebView } from "react-native-webview";
+import QRCode from "react-native-qrcode-svg";
 import { RootStackParamList } from "../../navigation/types";
+import { useAuthStore } from "../../store/useAuthStore";
+import { api } from "../../services/api";
 import { getEventById, type WarmthEvent, useWarmthStore } from "../../store/useWarmthStore";
 import { attendeeNavIcons, organizerNavIcons } from "./navIcons";
 import {
@@ -16,7 +34,8 @@ import {
 
 function attendeeBottomBar(
   active: "home" | "saved" | "tickets" | "profile",
-  navigation: any
+  navigation: any,
+  firstTicket?: { eventId: string; attendeeName: string; ticketId: string }
 ) {
   return (
     <WarmthBottomNav
@@ -40,14 +59,24 @@ function attendeeBottomBar(
           label: "Tickets",
           iconName: attendeeNavIcons.tickets,
           active: active === "tickets",
-          onPress: () => navigation.navigate("QRTicket", { eventId: "evt-1", attendeeName: "Guest", ticketId: "TKT-EVT-0001" }),
+          onPress: () => {
+            if (firstTicket) {
+              navigation.navigate("QRTicket", {
+                eventId: firstTicket.eventId,
+                attendeeName: firstTicket.attendeeName,
+                ticketId: firstTicket.ticketId,
+              });
+            } else {
+              Alert.alert("No tickets yet", "Book an event from the home feed to see your ticket here.");
+            }
+          },
         },
         {
           key: "profile",
           label: "Profile",
           iconName: attendeeNavIcons.profile,
           active: active === "profile",
-          onPress: () => Alert.alert("Profile", "UI only for now."),
+          onPress: () => navigation.navigate("Profile"),
         },
       ]}
     />
@@ -87,7 +116,7 @@ function organizerBottomBar(
           label: "Help",
           iconName: organizerNavIcons.help,
           active: active === "help",
-          onPress: () => Alert.alert("Help", "UI only for now."),
+          onPress: () => navigation.navigate("Profile"),
         },
       ]}
     />
@@ -97,6 +126,7 @@ function organizerBottomBar(
 export function LoginScreen({ navigation }: NativeStackScreenProps<RootStackParamList, "Login">) {
   const [mode, setMode] = useState<"gmail" | "phone">("phone");
   const [phone, setPhone] = useState("");
+  const [sending, setSending] = useState(false);
 
   return (
     <WarmthShell title="Evently" noHeader contentStyle={styles.loginShellContent}>
@@ -137,14 +167,26 @@ export function LoginScreen({ navigation }: NativeStackScreenProps<RootStackPara
         )}
 
         <WarmthButton
-          label="Send Code"
+          label={sending ? "Sending…" : "Send Code"}
           primary
-          onPress={() => {
+          onPress={async () => {
             if (!phone.trim()) {
               Alert.alert("Required", "Enter your phone or email first.");
               return;
             }
-            navigation.navigate("OTP", { phone: phone.trim() });
+            setSending(true);
+            try {
+              await api.post("/auth/send-code", { identifier: phone.trim() });
+              navigation.navigate("OTP", { identifier: phone.trim() });
+            } catch (e: unknown) {
+              const err = e as { response?: { data?: { message?: string } }; message?: string };
+              Alert.alert(
+                "Could not send code",
+                err?.response?.data?.message ?? err?.message ?? "Check that the API is running."
+              );
+            } finally {
+              setSending(false);
+            }
           }}
         />
 
@@ -158,9 +200,12 @@ export function LoginScreen({ navigation }: NativeStackScreenProps<RootStackPara
 }
 
 export function OTPScreen({ navigation, route }: NativeStackScreenProps<RootStackParamList, "OTP">) {
-  const [code, setCode] = useState(["", "", "", ""]);
+  const [code, setCode] = useState("");
   const [seconds, setSeconds] = useState(45);
-  const isReady = code.every((digit) => digit.length === 1);
+  const [verifying, setVerifying] = useState(false);
+  const setSession = useAuthStore((s) => s.setSession);
+  const refreshFromApi = useWarmthStore((s) => s.refreshFromApi);
+  const isReady = /^\d{4}$/.test(code);
 
   useEffect(() => {
     const id = setInterval(() => setSeconds((prev) => (prev > 0 ? prev - 1 : 0)), 1000);
@@ -174,34 +219,57 @@ export function OTPScreen({ navigation, route }: NativeStackScreenProps<RootStac
       rightAction={<WarmthHeaderAction label="Help" />}
     >
       <Text style={styles.title}>Enter your code</Text>
-      <Text style={styles.subtitle}>We sent a 4-digit OTP to {route.params.phone}</Text>
-      <View style={styles.row}>
-        {code.map((digit, i) => (
-          <Pressable
-            key={i}
-            style={styles.otpBox}
-            onPress={() => {
-              const next = [...code];
-              next[i] = next[i] ? "" : String((i + 3) % 10);
-              setCode(next);
-            }}
-          >
-            <Text style={styles.otpText}>{digit || "-"}</Text>
-          </Pressable>
-        ))}
-      </View>
+      <Text style={styles.subtitle}>We sent a 4-digit OTP to {route.params.identifier}</Text>
+      <TextInput
+        style={styles.otpInput}
+        value={code}
+        onChangeText={(value) => {
+          const digits = value.replace(/\D/g, "").slice(0, 4);
+          setCode(digits);
+        }}
+        keyboardType="number-pad"
+        maxLength={4}
+        autoFocus
+        placeholder="1234"
+        placeholderTextColor="#9a8574"
+      />
       <Text style={styles.subtleCenter}>
         {seconds > 0 ? `Resend code in 0:${String(seconds).padStart(2, "0")}` : "You can resend now"}
       </Text>
       <WarmthButton
-        label="Verify & Continue"
+        label={verifying ? "Verifying…" : "Verify & Continue"}
         primary
-        onPress={() => {
+        onPress={async () => {
           if (!isReady) {
             Alert.alert("Invalid OTP", "Please fill all 4 digits.");
             return;
           }
-          navigation.replace("HomeFeed");
+          setVerifying(true);
+          try {
+            const { data } = await api.post<{
+              token: string;
+              user: { id: number; identifier: string; totalCapacity: number; earlyBirdLimit: number };
+            }>("/auth/verify", {
+              identifier: route.params.identifier,
+              code,
+            });
+            setSession(data.token, {
+              id: data.user.id,
+              identifier: data.user.identifier,
+              totalCapacity: data.user.totalCapacity,
+              earlyBirdLimit: data.user.earlyBirdLimit,
+            });
+            await refreshFromApi();
+            navigation.replace("HomeFeed");
+          } catch (e: unknown) {
+            const err = e as { response?: { data?: { message?: string } }; message?: string };
+            Alert.alert(
+              "Verification failed",
+              err?.response?.data?.message ?? err?.message ?? "Try again or use demo code 1234."
+            );
+          } finally {
+            setVerifying(false);
+          }
         }}
       />
     </WarmthShell>
@@ -212,9 +280,19 @@ export function HomeFeedScreen({ navigation }: NativeStackScreenProps<RootStackP
   const events = useWarmthStore((state) => state.events);
   const savedEventIds = useWarmthStore((state) => state.savedEventIds);
   const toggleSavedEvent = useWarmthStore((state) => state.toggleSavedEvent);
+  const loading = useWarmthStore((state) => state.loading);
+  const refreshFromApi = useWarmthStore((state) => state.refreshFromApi);
+  const tickets = useWarmthStore((state) => state.tickets);
+  const firstTicket = tickets[0];
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<"All" | "Arts" | "Health" | "Social" | "Learning" | "Technology">(
     "All"
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshFromApi();
+    }, [refreshFromApi])
   );
 
   const filteredEvents = useMemo(
@@ -237,8 +315,14 @@ export function HomeFeedScreen({ navigation }: NativeStackScreenProps<RootStackP
       rightAction={
         <WarmthHeaderAction label="Search" onPress={() => Alert.alert("Search", "Search input is below.")} />
       }
-      bottomBar={attendeeBottomBar("home", navigation)}
+      bottomBar={attendeeBottomBar("home", navigation, firstTicket)}
     >
+      {loading && events.length === 0 ? (
+        <View style={{ paddingVertical: 24, alignItems: "center" }}>
+          <ActivityIndicator color="#f28c28" />
+          <Text style={styles.subtitle}>Loading events…</Text>
+        </View>
+      ) : null}
       <WarmthField
         label="Search"
         value={search}
@@ -262,7 +346,7 @@ export function HomeFeedScreen({ navigation }: NativeStackScreenProps<RootStackP
         const saved = savedEventIds.includes(event.id);
         return (
           <Pressable key={event.id} style={styles.card} onPress={() => navigation.navigate("EventDetails", { eventId: event.id })}>
-            <View style={styles.cardImage} />
+            <Image source={{ uri: event.heroImageUrl ?? DEFAULT_HERO }} style={styles.cardImage} />
             <View style={styles.cardTop}>
               <Text style={styles.cardTitle}>{event.title}</Text>
               <Pressable onPress={() => toggleSavedEvent(event.id)}>
@@ -283,8 +367,15 @@ export function HomeFeedScreen({ navigation }: NativeStackScreenProps<RootStackP
 
 const DEFAULT_HERO =
   "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?auto=format&w=1200&q=80";
-const DEFAULT_MAP =
-  "https://images.unsplash.com/photo-1524661135-423995f22d0b?auto=format&w=1000&q=80";
+
+function openNativeMap(location: string) {
+  const query = encodeURIComponent(location || "community center");
+  const url =
+    Platform.OS === "ios"
+      ? `http://maps.apple.com/?q=${query}`
+      : `https://www.google.com/maps/search/?api=1&query=${query}`;
+  return Linking.openURL(url);
+}
 
 function getEventDetailModel(event: WarmthEvent) {
   const parts = event.dateLabel
@@ -297,7 +388,7 @@ function getEventDetailModel(event: WarmthEvent) {
     timeRange: event.timeRange ?? (parts[1] ?? "See schedule"),
     aboutText: event.aboutLong ?? event.description,
     heroUri: event.heroImageUrl ?? DEFAULT_HERO,
-    mapUri: event.mapImageUrl ?? DEFAULT_MAP,
+    mapUri: `https://maps.google.com/maps?q=${encodeURIComponent(event.location || "community center")}&z=14&output=embed`,
     organizer: event.organizerName ?? "Evently Host",
     organizerAvatar: event.organizerAvatarUrl ?? "https://i.pravatar.cc/200?u=default",
   };
@@ -428,11 +519,9 @@ export function EventDetailsScreen({
 
         <Text style={styles.sectionHead}>Getting there</Text>
         <View style={styles.mapCard}>
-          <Image source={{ uri: d.mapUri }} style={styles.mapImage} />
-          <View style={styles.mapPin}>
-            <MaterialCommunityIcons name="map-marker" size={28} color={warmthColors.deep} />
-          </View>
+          <WebView source={{ uri: d.mapUri }} style={styles.mapWebView} />
         </View>
+        <WarmthButton label="Open in maps" onPress={() => openNativeMap(event.location)} />
       </View>
     </WarmthShell>
   );
@@ -443,6 +532,7 @@ export function BookingFormScreen({
   route,
 }: NativeStackScreenProps<RootStackParamList, "BookingForm">) {
   const event = getEventById(route.params.eventId);
+  const token = useAuthStore((s) => s.token);
   const addTicketForEvent = useWarmthStore((state) => state.addTicketForEvent);
   const [fullName, setFullName] = useState("");
   const [age, setAge] = useState("");
@@ -474,17 +564,26 @@ export function BookingFormScreen({
       <WarmthButton
         label="Continue"
         primary
-        onPress={() => {
+        onPress={async () => {
+          if (!token) {
+            Alert.alert("Sign in required", "Please log in from the Profile tab after verifying your phone or email.");
+            return;
+          }
           if (!fullName || !age || !gender || !phone) {
             Alert.alert("Missing details", "Please fill all fields.");
             return;
           }
-          const ticket = addTicketForEvent(event.id, fullName);
-          navigation.navigate("QRTicket", {
-            eventId: event.id,
-            attendeeName: fullName,
-            ticketId: ticket.ticketId,
-          });
+          try {
+            const ticket = await addTicketForEvent(event.id, fullName);
+            navigation.navigate("QRTicket", {
+              eventId: event.id,
+              attendeeName: fullName,
+              ticketId: ticket.ticketId,
+            });
+          } catch (e: unknown) {
+            const err = e as { response?: { data?: { message?: string } }; message?: string };
+            Alert.alert("Booking failed", err?.response?.data?.message ?? err?.message ?? "Try again.");
+          }
         }}
       />
     </WarmthShell>
@@ -498,6 +597,11 @@ export function QRTicketScreen({ navigation, route }: NativeStackScreenProps<Roo
   const [saveOffline, setSaveOffline] = useState(true);
   const selectedTicket = tickets.find((ticket) => ticket.ticketId === selectedTicketId);
   const eventTickets = tickets.filter((ticket) => ticket.eventId === route.params.eventId);
+  const ticketPayload = JSON.stringify({
+    ticketId: selectedTicket?.ticketId ?? route.params.ticketId,
+    eventId: route.params.eventId,
+    attendeeName: selectedTicket?.attendeeName ?? route.params.attendeeName,
+  });
 
   return (
     <WarmthShell
@@ -536,7 +640,7 @@ export function QRTicketScreen({ navigation, route }: NativeStackScreenProps<Roo
 
           <View style={styles.qrBox}>
             <View style={styles.qrInner}>
-              <MaterialCommunityIcons name="qrcode" size={124} color="#111827" />
+              <QRCode value={ticketPayload} size={160} backgroundColor="#fff" color="#111827" />
             </View>
           </View>
 
@@ -572,6 +676,10 @@ export function QRTicketScreen({ navigation, route }: NativeStackScreenProps<Roo
           <MaterialCommunityIcons name="wallet-outline" size={18} color="#914d00" />
           <Text style={styles.qrWalletText}>Add to Apple Wallet</Text>
         </Pressable>
+        <Pressable style={styles.qrWalletButton} onPress={() => navigation.navigate("TicketScanner")}>
+          <MaterialCommunityIcons name="qrcode-scan" size={18} color="#914d00" />
+          <Text style={styles.qrWalletText}>Scan Ticket</Text>
+        </Pressable>
       </View>
 
       {eventTickets.length > 1 ? (
@@ -603,20 +711,98 @@ export function QRTicketScreen({ navigation, route }: NativeStackScreenProps<Roo
   );
 }
 
+export function TicketScannerScreen({
+  navigation,
+}: NativeStackScreenProps<RootStackParamList, "TicketScanner">) {
+  const [permission, requestPermission] = useCameraPermissions();
+  const [busy, setBusy] = useState(false);
+  const [resultMessage, setResultMessage] = useState("Point camera at a ticket QR code.");
+
+  const verifyScannedCode = async (rawValue: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      let ticketId = rawValue;
+      try {
+        const parsed = JSON.parse(rawValue) as { ticketId?: string };
+        if (parsed?.ticketId) ticketId = parsed.ticketId;
+      } catch {
+        /* plain string QR is allowed */
+      }
+
+      const { data } = await api.post<{
+        valid: boolean;
+        ticket: { ticketId: string; attendeeName: string };
+        event: { title: string; location: string; date: string };
+      }>("/tickets/verify", { ticketId });
+
+      if (data.valid) {
+        setResultMessage(
+          `Valid ticket: ${data.ticket.ticketId}\n${data.ticket.attendeeName} • ${data.event.title}`
+        );
+        Alert.alert(
+          "Ticket verified",
+          `${data.ticket.attendeeName}\n${data.event.title}\n${data.event.date} • ${data.event.location}`
+        );
+      } else {
+        setResultMessage("Ticket invalid");
+      }
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { message?: string } }; message?: string };
+      setResultMessage(`Verification failed: ${err?.response?.data?.message ?? "Unknown error"}`);
+    } finally {
+      setTimeout(() => setBusy(false), 1200);
+    }
+  };
+
+  if (!permission) {
+    return (
+      <WarmthShell title="Scan Ticket" leftAction={<WarmthHeaderAction label="Back" onPress={() => navigation.goBack()} />}>
+        <Text style={styles.subtitle}>Loading camera permissions…</Text>
+      </WarmthShell>
+    );
+  }
+
+  if (!permission.granted) {
+    return (
+      <WarmthShell title="Scan Ticket" leftAction={<WarmthHeaderAction label="Back" onPress={() => navigation.goBack()} />}>
+        <Text style={styles.subtitle}>Camera access is required for QR scanning.</Text>
+        <WarmthButton label="Allow Camera" primary onPress={() => requestPermission()} />
+      </WarmthShell>
+    );
+  }
+
+  return (
+    <WarmthShell title="Scan Ticket" leftAction={<WarmthHeaderAction label="Back" onPress={() => navigation.goBack()} />}>
+      <View style={styles.scanCameraWrap}>
+        <CameraView
+          style={styles.scanCamera}
+          barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+          onBarcodeScanned={({ data }) => verifyScannedCode(data)}
+        />
+      </View>
+      <Text style={styles.subtitle}>{resultMessage}</Text>
+    </WarmthShell>
+  );
+}
+
 export function OfflineHubScreen({ navigation }: NativeStackScreenProps<RootStackParamList, "OfflineHub">) {
   const events = useWarmthStore((state) => state.events);
   const savedEventIds = useWarmthStore((state) => state.savedEventIds);
   const tickets = useWarmthStore((state) => state.tickets ?? []);
   const savedEvents = events.filter((event) => savedEventIds.includes(event.id));
+  const firstTicket = tickets[0];
 
   return (
     <WarmthShell
       title="Events"
-      rightAction={<WarmthHeaderAction label="Profile" onPress={() => Alert.alert("Profile", "UI only for now.")} />}
-      bottomBar={attendeeBottomBar("saved", navigation)}
+      rightAction={<WarmthHeaderAction label="Profile" onPress={() => navigation.navigate("Profile")} />}
+      bottomBar={attendeeBottomBar("saved", navigation, firstTicket)}
     >
-      <View style={[styles.card, { backgroundColor: "#ffe3e0" }]}>
-        <Text style={[styles.subtitle, { color: "#93000a" }]}>You are offline. Showing saved content.</Text>
+      <View style={[styles.card, { backgroundColor: "#fff3e6" }]}>
+        <Text style={[styles.subtitle, { color: "#5d2f00" }]}>
+          Saved events and tickets sync from your account when you are online.
+        </Text>
       </View>
       <Text style={[styles.title, styles.sectionGap]}>Saved Events</Text>
       {savedEvents.map((event) => (
@@ -654,7 +840,17 @@ export function OfflineHubScreen({ navigation }: NativeStackScreenProps<RootStac
 
       <View style={styles.rowWrap}>
         <WarmthButton label="Ticket Limits" onPress={() => navigation.navigate("TicketLimits")} />
-        <WarmthButton label="Edit Event" onPress={() => navigation.navigate("EditEvent", { eventId: "evt-1" })} />
+        <WarmthButton
+          label="Edit Event"
+          onPress={() => {
+            const target = events[0];
+            if (!target) {
+              Alert.alert("No events", "Create or load an event first.");
+              return;
+            }
+            navigation.navigate("EditEvent", { eventId: target.id });
+          }}
+        />
       </View>
     </WarmthShell>
   );
@@ -694,12 +890,16 @@ export function TicketLimitsScreen({ navigation }: NativeStackScreenProps<RootSt
 }
 
 export function CreateEventScreen({ navigation }: NativeStackScreenProps<RootStackParamList, "CreateEvent">) {
+  const token = useAuthStore((s) => s.token);
   const createEvent = useWarmthStore((state) => state.createEvent);
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("Social");
+  /** ISO date for API (YYYY-MM-DD) */
+  const [dateYmd, setDateYmd] = useState("");
   const [dateLabel, setDateLabel] = useState("");
   const [location, setLocation] = useState("");
   const [description, setDescription] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   return (
     <WarmthShell
@@ -711,33 +911,58 @@ export function CreateEventScreen({ navigation }: NativeStackScreenProps<RootSta
       <Text style={styles.title}>Create New Event</Text>
       <WarmthField label="Event Name" value={title} onChangeText={setTitle} placeholder="e.g., Weekly Book Club" />
       <WarmthField label="Category" value={category} onChangeText={setCategory} placeholder="Social / Health / Arts / Learning" />
-      <WarmthField label="Date & Time" value={dateLabel} onChangeText={setDateLabel} placeholder="Sat, Oct 14 • 10:00 AM" />
+      <WarmthField
+        label="Event date (YYYY-MM-DD)"
+        value={dateYmd}
+        onChangeText={setDateYmd}
+        placeholder="2026-05-06"
+      />
+      <WarmthField
+        label="Date & time (shown on card)"
+        value={dateLabel}
+        onChangeText={setDateLabel}
+        placeholder="Sat, May 6 • 10:00 AM"
+      />
       <WarmthField label="Location" value={location} onChangeText={setLocation} placeholder="Address or link" />
       <WarmthField label="Description" value={description} onChangeText={setDescription} placeholder="What should people expect?" />
       <WarmthButton
-        label="Create Event"
+        label={submitting ? "Creating…" : "Create Event"}
         primary
-        onPress={() => {
-          if (!title || !dateLabel || !location) {
-            Alert.alert("Missing info", "Title, date/time, and location are required.");
+        onPress={async () => {
+          if (!token) {
+            Alert.alert("Sign in required", "Log in to publish an event.");
             return;
           }
-          const newId = createEvent({
-            title,
-            category: (["Arts", "Health", "Social", "Learning", "Technology"].includes(category)
-              ? category
-              : "Social") as
-              | "Arts"
-              | "Health"
-              | "Social"
-              | "Learning"
-              | "Technology",
-            dateLabel,
-            location,
-            priceLabel: "$10",
-            description: description || "No description yet.",
-          });
-          navigation.replace("EditEvent", { eventId: newId });
+          if (!title || !dateYmd || !location) {
+            Alert.alert("Missing info", "Title, event date (YYYY-MM-DD), and location are required.");
+            return;
+          }
+          setSubmitting(true);
+          try {
+            const newId = await createEvent({
+              title,
+              category: (["Arts", "Health", "Social", "Learning", "Technology"].includes(category)
+                ? category
+                : "Social") as
+                | "Arts"
+                | "Health"
+                | "Social"
+                | "Learning"
+                | "Technology",
+              dateLabel: dateLabel || dateYmd,
+              location,
+              priceLabel: "$10",
+              description: description || "No description yet.",
+              date: dateYmd,
+              dateDetail: dateLabel || undefined,
+            });
+            navigation.replace("EditEvent", { eventId: newId });
+          } catch (e: unknown) {
+            const err = e as { response?: { data?: { message?: string } }; message?: string };
+            Alert.alert("Could not create", err?.response?.data?.message ?? err?.message ?? "Try again.");
+          } finally {
+            setSubmitting(false);
+          }
         }}
       />
     </WarmthShell>
@@ -745,13 +970,16 @@ export function CreateEventScreen({ navigation }: NativeStackScreenProps<RootSta
 }
 
 export function EditEventScreen({ navigation, route }: NativeStackScreenProps<RootStackParamList, "EditEvent">) {
+  const token = useAuthStore((s) => s.token);
   const event = useWarmthStore((state) => state.events.find((item) => item.id === route.params.eventId));
   const updateEvent = useWarmthStore((state) => state.updateEvent);
   const [title, setTitle] = useState(event?.title ?? "");
   const [category, setCategory] = useState<string>(event?.category ?? "Social");
+  const [dateYmd, setDateYmd] = useState(event?.apiDate ?? "");
   const [dateLabel, setDateLabel] = useState(event?.dateLabel ?? "");
   const [location, setLocation] = useState(event?.location ?? "");
   const [description, setDescription] = useState(event?.description ?? "");
+  const [saving, setSaving] = useState(false);
 
   return (
     <WarmthShell
@@ -762,33 +990,52 @@ export function EditEventScreen({ navigation, route }: NativeStackScreenProps<Ro
       <Text style={styles.title}>Edit Event</Text>
       <WarmthField label="Event Name" value={title} onChangeText={setTitle} placeholder="Event name" />
       <WarmthField label="Category" value={category} onChangeText={setCategory} placeholder="Category" />
-      <WarmthField label="Date & Time" value={dateLabel} onChangeText={setDateLabel} placeholder="Date & time" />
+      <WarmthField label="Event date (YYYY-MM-DD)" value={dateYmd} onChangeText={setDateYmd} placeholder="YYYY-MM-DD" />
+      <WarmthField label="Date & time (card)" value={dateLabel} onChangeText={setDateLabel} placeholder="Date & time" />
       <WarmthField label="Location" value={location} onChangeText={setLocation} placeholder="Location" />
       <WarmthField label="Description" value={description} onChangeText={setDescription} placeholder="Description" />
       <WarmthButton
-        label="Save Changes"
+        label={saving ? "Saving…" : "Save Changes"}
         primary
-        onPress={() => {
+        onPress={async () => {
+          if (!token) {
+            Alert.alert("Sign in required", "Log in to save changes.");
+            return;
+          }
           if (!event) {
             Alert.alert("Error", "Event not found.");
             return;
           }
-          updateEvent(event.id, {
-            title,
-            category: (["Arts", "Health", "Social", "Learning", "Technology"].includes(category)
-              ? category
-              : "Social") as
-              | "Arts"
-              | "Health"
-              | "Social"
-              | "Learning"
-              | "Technology",
-            dateLabel,
-            location,
-            priceLabel: event.priceLabel,
-            description,
-          });
-          navigation.replace("HomeFeed");
+          if (!dateYmd) {
+            Alert.alert("Missing date", "Enter the event date as YYYY-MM-DD.");
+            return;
+          }
+          setSaving(true);
+          try {
+            await updateEvent(event.id, {
+              title,
+              category: (["Arts", "Health", "Social", "Learning", "Technology"].includes(category)
+                ? category
+                : "Social") as
+                | "Arts"
+                | "Health"
+                | "Social"
+                | "Learning"
+                | "Technology",
+              dateLabel,
+              location,
+              priceLabel: event.priceLabel,
+              description,
+              apiDate: dateYmd,
+              dateDetail: dateLabel,
+            });
+            navigation.replace("HomeFeed");
+          } catch (e: unknown) {
+            const err = e as { response?: { data?: { message?: string } }; message?: string };
+            Alert.alert("Save failed", err?.response?.data?.message ?? err?.message ?? "Try again.");
+          } finally {
+            setSaving(false);
+          }
         }}
       />
       <WarmthButton label="Cancel Editing" onPress={() => navigation.goBack()} />
@@ -988,17 +1235,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#e5dfd6",
     marginBottom: 8,
   },
-  mapImage: {
+  mapWebView: {
     width: "100%",
     height: "100%",
-    opacity: 0.9,
-  },
-  mapPin: {
-    position: "absolute",
-    top: "42%",
-    left: "50%",
-    marginLeft: -14,
-    marginTop: -20,
   },
   loginShellContent: {
     flexGrow: 1,
@@ -1146,6 +1385,18 @@ const styles = StyleSheet.create({
   },
   chipText: { color: warmthColors.muted, fontWeight: "600" },
   chipTextActive: { color: "#5d2f00" },
+  otpInput: {
+    borderWidth: 1,
+    borderColor: warmthColors.border,
+    borderRadius: 18,
+    minHeight: 72,
+    backgroundColor: warmthColors.card,
+    color: warmthColors.text,
+    fontSize: 34,
+    fontWeight: "700",
+    letterSpacing: 8,
+    textAlign: "center",
+  },
   card: {
     borderWidth: 1,
     borderColor: warmthColors.border,
@@ -1448,6 +1699,17 @@ const styles = StyleSheet.create({
   qrStackMeta: {
     color: warmthColors.muted,
     fontSize: 14,
+  },
+  scanCameraWrap: {
+    width: "100%",
+    height: 320,
+    borderRadius: 20,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: warmthColors.border,
+  },
+  scanCamera: {
+    flex: 1,
   },
   ticketListCard: {
     borderWidth: 1,

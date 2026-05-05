@@ -1,9 +1,16 @@
 import axios from "axios";
-
-// Use your machine IP on physical device, localhost for emulator/web.
-const API_BASE_URL = "http://localhost:5000/api";
+import { API_BASE_URL } from "../config/apiBase";
+import { useAuthStore } from "../store/useAuthStore";
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 10000,
+  timeout: 15000,
+});
+
+api.interceptors.request.use((config) => {
+  const token = useAuthStore.getState().token;
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
 });
