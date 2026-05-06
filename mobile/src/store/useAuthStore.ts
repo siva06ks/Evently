@@ -5,6 +5,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 export type AuthUser = {
   id: number;
   identifier: string;
+  displayName?: string;
   totalCapacity?: number;
   earlyBirdLimit?: number;
 };

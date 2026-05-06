@@ -1,6 +1,15 @@
 import type { ReactNode } from "react";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NavIconName } from "./navIcons";
 import type { ViewStyle } from "react-native";
@@ -37,20 +46,31 @@ export function WarmthShell({
 
   return (
     <SafeAreaView style={styles.page} edges={["top"]}>
-      {!noHeader ? (
-        <View style={[styles.header, { paddingTop: topSafePadding }]}>
-          <View style={styles.headerSide}>{leftAction}</View>
-          <Text style={styles.brand}>{title}</Text>
-          <View style={styles.headerSideRight}>{rightAction}</View>
-        </View>
-      ) : null}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={styles.page}
+      >
+        {!noHeader ? (
+          <View style={[styles.header, { paddingTop: topSafePadding }]}>
+            <View style={styles.headerSide}>{leftAction}</View>
+            <Text style={styles.brand}>{title}</Text>
+            <View style={styles.headerSideRight}>{rightAction}</View>
+          </View>
+        ) : null}
 
-      <ScrollView contentContainerStyle={[styles.content, contentStyle]}>{children}</ScrollView>
-      {bottomBar ? (
-        <View style={[styles.bottomBarWrap, { paddingBottom: 12 + Math.max(insets.bottom, 6) }]}>
-          {bottomBar}
-        </View>
-      ) : null}
+        <ScrollView
+          contentContainerStyle={[styles.content, contentStyle]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {children}
+        </ScrollView>
+        {bottomBar ? (
+          <View style={[styles.bottomBarWrap, { paddingBottom: 12 + Math.max(insets.bottom, 6) }]}>
+            {bottomBar}
+          </View>
+        ) : null}
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

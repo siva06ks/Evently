@@ -2,6 +2,7 @@ import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useFocusEffect } from "@react-navigation/native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   ActivityIndicator,
   Alert,
@@ -16,12 +17,19 @@ import {
   View,
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 import { WebView } from "react-native-webview";
 import QRCode from "react-native-qrcode-svg";
 import { RootStackParamList } from "../../navigation/types";
 import { useAuthStore } from "../../store/useAuthStore";
 import { api } from "../../services/api";
-import { getEventById, type WarmthEvent, useWarmthStore } from "../../store/useWarmthStore";
+import {
+  getEventById,
+  type WarmthEvent,
+  type WarmthEventCategory,
+  useWarmthStore,
+} from "../../store/useWarmthStore";
 import { attendeeNavIcons, organizerNavIcons } from "./navIcons";
 import {
   WarmthBottomNav,
@@ -121,6 +129,16 @@ function organizerBottomBar(
       ]}
     />
   );
+}
+
+function openTopMenu(navigation: any) {
+  Alert.alert("Menu", "Choose where you want to go.", [
+    { text: "Profile", onPress: () => navigation.navigate("Profile") },
+    { text: "Saved", onPress: () => navigation.navigate("OfflineHub") },
+    { text: "Scan Ticket", onPress: () => navigation.navigate("TicketScanner") },
+    { text: "Ticket Settings", onPress: () => navigation.navigate("TicketLimits") },
+    { text: "Cancel", style: "cancel" },
+  ]);
 }
 
 export function LoginScreen({ navigation }: NativeStackScreenProps<RootStackParamList, "Login">) {
@@ -259,7 +277,7 @@ export function OTPScreen({ navigation, route }: NativeStackScreenProps<RootStac
               totalCapacity: data.user.totalCapacity,
               earlyBirdLimit: data.user.earlyBirdLimit,
             });
-            await refreshFromApi();
+            refreshFromApi().catch(() => undefined);
             navigation.replace("HomeFeed");
           } catch (e: unknown) {
             const err = e as { response?: { data?: { message?: string } }; message?: string };
@@ -311,7 +329,7 @@ export function HomeFeedScreen({ navigation }: NativeStackScreenProps<RootStackP
   return (
     <WarmthShell
       title="Evently"
-      leftAction={<WarmthHeaderAction label="Menu" />}
+      leftAction={<WarmthHeaderAction label="Menu" onPress={() => openTopMenu(navigation)} />}
       rightAction={
         <WarmthHeaderAction label="Search" onPress={() => Alert.alert("Search", "Search input is below.")} />
       }
@@ -346,7 +364,7 @@ export function HomeFeedScreen({ navigation }: NativeStackScreenProps<RootStackP
         const saved = savedEventIds.includes(event.id);
         return (
           <Pressable key={event.id} style={styles.card} onPress={() => navigation.navigate("EventDetails", { eventId: event.id })}>
-            <Image source={{ uri: event.heroImageUrl ?? DEFAULT_HERO }} style={styles.cardImage} />
+            <Image source={{ uri: getEventImageUri(event) }} style={styles.cardImage} />
             <View style={styles.cardTop}>
               <Text style={styles.cardTitle}>{event.title}</Text>
               <Pressable onPress={() => toggleSavedEvent(event.id)}>
@@ -367,6 +385,17 @@ export function HomeFeedScreen({ navigation }: NativeStackScreenProps<RootStackP
 
 const DEFAULT_HERO =
   "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?auto=format&w=1200&q=80";
+const CATEGORY_HERO_IMAGES: Record<WarmthEventCategory, string> = {
+  Arts: "https://images.unsplash.com/photo-1460661419201-fd4cecdf8a8b?auto=format&w=1200&q=80",
+  Health: "https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?auto=format&w=1200&q=80",
+  Social: "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&w=1200&q=80",
+  Learning: "https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&w=1200&q=80",
+  Technology: "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&w=1200&q=80",
+};
+
+function getEventImageUri(event: WarmthEvent) {
+  return event.heroImageUrl ?? CATEGORY_HERO_IMAGES[event.category] ?? DEFAULT_HERO;
+}
 
 function openNativeMap(location: string) {
   const query = encodeURIComponent(location || "community center");
@@ -387,11 +416,38 @@ function getEventDetailModel(event: WarmthEvent) {
     dateDetail: event.dateDetail ?? (parts[0] ?? event.dateLabel),
     timeRange: event.timeRange ?? (parts[1] ?? "See schedule"),
     aboutText: event.aboutLong ?? event.description,
-    heroUri: event.heroImageUrl ?? DEFAULT_HERO,
-    mapUri: `https://maps.google.com/maps?q=${encodeURIComponent(event.location || "community center")}&z=14&output=embed`,
+    heroUri: getEventImageUri(event),
+    mapUri: `https://www.google.com/maps?q=${encodeURIComponent(event.location || "community center")}&z=14&output=embed`,
     organizer: event.organizerName ?? "Evently Host",
     organizerAvatar: event.organizerAvatarUrl ?? "https://i.pravatar.cc/200?u=default",
   };
+}
+
+function MapEmbed({
+  uri,
+  onError,
+}: {
+  uri: string;
+  onError: () => void;
+}) {
+  if (Platform.OS === "web") {
+    return (
+      <View style={styles.mapWebView}>
+        {/* eslint-disable-next-line @typescript-eslint/ban-ts-comment */}
+        {/* @ts-ignore */}
+        <iframe
+          src={uri}
+          title="Event location map"
+          style={{ border: 0, width: "100%", height: "100%" }}
+          loading="lazy"
+          referrerPolicy="no-referrer-when-downgrade"
+          onError={onError}
+        />
+      </View>
+    );
+  }
+
+  return <WebView source={{ uri }} style={styles.mapWebView} onError={onError} />;
 }
 
 export function EventDetailsScreen({
@@ -402,6 +458,9 @@ export function EventDetailsScreen({
   const savedEventIds = useWarmthStore((state) => state.savedEventIds);
   const toggleSavedEvent = useWarmthStore((state) => state.toggleSavedEvent);
   const [following, setFollowing] = useState(false);
+  const [mapFailed, setMapFailed] = useState(false);
+  const [mapLoading, setMapLoading] = useState(false);
+  const [mapEmbedUri, setMapEmbedUri] = useState<string | null>(null);
 
   if (!event) {
     return (
@@ -416,6 +475,52 @@ export function EventDetailsScreen({
 
   const d = getEventDetailModel(event);
   const isSaved = savedEventIds.includes(event.id);
+
+  useEffect(() => {
+    let canceled = false;
+    const loadMap = async () => {
+      setMapFailed(false);
+      setMapLoading(true);
+      try {
+        const query = encodeURIComponent(event.location || "community center");
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${query}`,
+          {
+            headers: {
+              "Accept-Language": "en",
+            },
+          }
+        );
+        const data = (await response.json()) as Array<{ lat: string; lon: string }>;
+        if (!data.length) {
+          throw new Error("No coordinates found");
+        }
+        const lat = Number(data[0].lat);
+        const lon = Number(data[0].lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          throw new Error("Invalid coordinates");
+        }
+        const dLat = 0.01;
+        const dLon = 0.01;
+        const bbox = `${lon - dLon},${lat - dLat},${lon + dLon},${lat + dLat}`;
+        const embed = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(
+          bbox
+        )}&layer=mapnik&marker=${lat},${lon}`;
+        if (!canceled) setMapEmbedUri(embed);
+      } catch {
+        if (!canceled) {
+          setMapFailed(true);
+          setMapEmbedUri(null);
+        }
+      } finally {
+        if (!canceled) setMapLoading(false);
+      }
+    };
+    loadMap();
+    return () => {
+      canceled = true;
+    };
+  }, [event.location]);
 
   return (
     <WarmthShell
@@ -519,7 +624,19 @@ export function EventDetailsScreen({
 
         <Text style={styles.sectionHead}>Getting there</Text>
         <View style={styles.mapCard}>
-          <WebView source={{ uri: d.mapUri }} style={styles.mapWebView} />
+          {mapLoading ? (
+            <View style={styles.mapFallback}>
+              <ActivityIndicator color="#914d00" />
+              <Text style={styles.mapFallbackText}>Loading map…</Text>
+            </View>
+          ) : mapFailed || !mapEmbedUri ? (
+            <View style={styles.mapFallback}>
+              <MaterialCommunityIcons name="map-marker-alert-outline" size={22} color="#914d00" />
+              <Text style={styles.mapFallbackText}>Map preview unavailable. Use Open in maps.</Text>
+            </View>
+          ) : (
+            <MapEmbed uri={mapEmbedUri} onError={() => setMapFailed(true)} />
+          )}
         </View>
         <WarmthButton label="Open in maps" onPress={() => openNativeMap(event.location)} />
       </View>
@@ -538,6 +655,7 @@ export function BookingFormScreen({
   const [age, setAge] = useState("");
   const [gender, setGender] = useState("");
   const [phone, setPhone] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   if (!event) {
     return (
@@ -562,9 +680,10 @@ export function BookingFormScreen({
       <WarmthField label="Gender" value={gender} onChangeText={setGender} placeholder="Select gender" />
       <WarmthField label="Phone Number" value={phone} onChangeText={setPhone} placeholder="(555) 000-0000" />
       <WarmthButton
-        label="Continue"
+        label={submitting ? "Booking..." : "Continue"}
         primary
         onPress={async () => {
+          if (submitting) return;
           if (!token) {
             Alert.alert("Sign in required", "Please log in from the Profile tab after verifying your phone or email.");
             return;
@@ -574,15 +693,27 @@ export function BookingFormScreen({
             return;
           }
           try {
+            setSubmitting(true);
             const ticket = await addTicketForEvent(event.id, fullName);
-            navigation.navigate("QRTicket", {
-              eventId: event.id,
-              attendeeName: fullName,
-              ticketId: ticket.ticketId,
+            navigation.reset({
+              index: 1,
+              routes: [
+                { name: "HomeFeed" },
+                {
+                  name: "QRTicket",
+                  params: {
+                    eventId: event.id,
+                    attendeeName: fullName,
+                    ticketId: ticket.ticketId,
+                  },
+                },
+              ],
             });
           } catch (e: unknown) {
             const err = e as { response?: { data?: { message?: string } }; message?: string };
             Alert.alert("Booking failed", err?.response?.data?.message ?? err?.message ?? "Try again.");
+          } finally {
+            setSubmitting(false);
           }
         }}
       />
@@ -594,14 +725,77 @@ export function QRTicketScreen({ navigation, route }: NativeStackScreenProps<Roo
   const event = getEventById(route.params.eventId);
   const tickets = useWarmthStore((state) => state.tickets ?? []);
   const [selectedTicketId, setSelectedTicketId] = useState(route.params.ticketId);
-  const [saveOffline, setSaveOffline] = useState(true);
+  const [saveOffline, setSaveOffline] = useState(false);
   const selectedTicket = tickets.find((ticket) => ticket.ticketId === selectedTicketId);
   const eventTickets = tickets.filter((ticket) => ticket.eventId === route.params.eventId);
+  const d = event ? getEventDetailModel(event) : null;
+  const attendeeName = selectedTicket?.attendeeName ?? route.params.attendeeName;
+  const currentTicketId = selectedTicket?.ticketId ?? route.params.ticketId;
   const ticketPayload = JSON.stringify({
-    ticketId: selectedTicket?.ticketId ?? route.params.ticketId,
+    ticketId: currentTicketId,
     eventId: route.params.eventId,
-    attendeeName: selectedTicket?.attendeeName ?? route.params.attendeeName,
+    attendeeName,
   });
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const raw = await AsyncStorage.getItem("evently-offline-ticket-ids");
+      const ids = raw ? (JSON.parse(raw) as string[]) : [];
+      if (mounted) {
+        setSaveOffline(ids.includes(currentTicketId));
+      }
+    })().catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, [currentTicketId]);
+
+  const toggleOfflineSave = async () => {
+    const raw = await AsyncStorage.getItem("evently-offline-ticket-ids");
+    const ids = raw ? (JSON.parse(raw) as string[]) : [];
+    const exists = ids.includes(currentTicketId);
+    const next = exists ? ids.filter((id) => id !== currentTicketId) : [...ids, currentTicketId];
+    await AsyncStorage.setItem("evently-offline-ticket-ids", JSON.stringify(next));
+    setSaveOffline(!exists);
+    Alert.alert(
+      exists ? "Removed from offline" : "Saved offline",
+      exists
+        ? "This ticket was removed from offline cache."
+        : "This ticket is now marked for offline access on this device."
+    );
+  };
+
+  const downloadTicketPdf = async () => {
+    const html = `
+      <html>
+        <body style="font-family: Arial; padding: 24px;">
+          <h1 style="margin-bottom: 4px;">${event?.title ?? "Event Ticket"}</h1>
+          <p style="color:#666;margin-top:0;">${event?.location ?? "Venue TBD"}</p>
+          <hr />
+          <p><b>Attendee:</b> ${attendeeName}</p>
+          <p><b>Ticket ID:</b> ${currentTicketId}</p>
+          <p><b>Date:</b> ${d?.dateDetail ?? "Date TBD"}</p>
+          <p><b>Time:</b> ${d?.timeRange ?? "See schedule"}</p>
+          <p style="margin-top:30px;color:#888;">Generated by Evently</p>
+        </body>
+      </html>`;
+    try {
+      const file = await Print.printToFileAsync({ html });
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(file.uri, {
+          mimeType: "application/pdf",
+          dialogTitle: "Share ticket PDF",
+        });
+      } else {
+        Alert.alert("PDF created", `Saved at ${file.uri}`);
+      }
+    } catch (e: unknown) {
+      const err = e as { message?: string };
+      Alert.alert("PDF failed", err?.message ?? "Could not generate PDF.");
+    }
+  };
 
   return (
     <WarmthShell
@@ -616,21 +810,21 @@ export function QRTicketScreen({ navigation, route }: NativeStackScreenProps<Roo
           <View style={styles.vipPill}>
             <Text style={styles.vipPillText}>VIP Pass</Text>
           </View>
-          <Text style={styles.qrHeroTitle}>Autumn Jazz Fest</Text>
-          <Text style={styles.qrHeroSubtitle}>{event?.location ?? "Riverside Park Amphitheater"}</Text>
+          <Text style={styles.qrHeroTitle}>{event?.title ?? "Event Ticket"}</Text>
+          <Text style={styles.qrHeroSubtitle}>{event?.location ?? "Event venue"}</Text>
 
           <View style={styles.qrHeroStats}>
             <View style={styles.qrHeroStat}>
               <Text style={styles.qrHeroStatLabel}>Date</Text>
-              <Text style={styles.qrHeroStatValue}>Oct{"\n"}24</Text>
+              <Text style={styles.qrHeroStatValue}>{(d?.dateDetail ?? "Date TBD").split(",")[0] ?? "Date TBD"}</Text>
             </View>
             <View style={styles.qrHeroStat}>
               <Text style={styles.qrHeroStatLabel}>Time</Text>
-              <Text style={styles.qrHeroStatValue}>7:00{"\n"}PM</Text>
+              <Text style={styles.qrHeroStatValue}>{d?.timeRange ?? "See schedule"}</Text>
             </View>
             <View style={styles.qrHeroStat}>
-              <Text style={styles.qrHeroStatLabel}>Gate</Text>
-              <Text style={styles.qrHeroStatValue}>North</Text>
+              <Text style={styles.qrHeroStatLabel}>Guest</Text>
+              <Text style={styles.qrHeroStatValue}>{attendeeName}</Text>
             </View>
           </View>
         </View>
@@ -656,7 +850,7 @@ export function QRTicketScreen({ navigation, route }: NativeStackScreenProps<Roo
       </View>
 
       <View style={styles.qrControlsCard}>
-        <Pressable style={styles.qrToggleRow} onPress={() => setSaveOffline((prev) => !prev)}>
+        <Pressable style={styles.qrToggleRow} onPress={toggleOfflineSave}>
           <View style={styles.qrToggleInfo}>
             <View style={styles.qrToggleIconBadge}>
               <MaterialCommunityIcons name="download" size={16} color="#914d00" />
@@ -675,6 +869,10 @@ export function QRTicketScreen({ navigation, route }: NativeStackScreenProps<Roo
         <Pressable style={styles.qrWalletButton}>
           <MaterialCommunityIcons name="wallet-outline" size={18} color="#914d00" />
           <Text style={styles.qrWalletText}>Add to Apple Wallet</Text>
+        </Pressable>
+        <Pressable style={styles.qrWalletButton} onPress={downloadTicketPdf}>
+          <MaterialCommunityIcons name="file-pdf-box" size={18} color="#914d00" />
+          <Text style={styles.qrWalletText}>Download PDF</Text>
         </Pressable>
         <Pressable style={styles.qrWalletButton} onPress={() => navigation.navigate("TicketScanner")}>
           <MaterialCommunityIcons name="qrcode-scan" size={18} color="#914d00" />
@@ -864,7 +1062,7 @@ export function TicketLimitsScreen({ navigation }: NativeStackScreenProps<RootSt
   return (
     <WarmthShell
       title="Event Helper"
-      leftAction={<WarmthHeaderAction label="Menu" />}
+      leftAction={<WarmthHeaderAction label="Menu" onPress={() => openTopMenu(navigation)} />}
       rightAction={<WarmthHeaderAction label="Profile" />}
       bottomBar={organizerBottomBar("tickets", navigation)}
     >
@@ -904,7 +1102,7 @@ export function CreateEventScreen({ navigation }: NativeStackScreenProps<RootSta
   return (
     <WarmthShell
       title="Event Helper"
-      leftAction={<WarmthHeaderAction label="Menu" />}
+      leftAction={<WarmthHeaderAction label="Menu" onPress={() => openTopMenu(navigation)} />}
       rightAction={<WarmthHeaderAction label="Profile" />}
       bottomBar={organizerBottomBar("create", navigation)}
     >
@@ -1238,6 +1436,19 @@ const styles = StyleSheet.create({
   mapWebView: {
     width: "100%",
     height: "100%",
+  },
+  mapFallback: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    backgroundColor: "#f9efe3",
+  },
+  mapFallbackText: {
+    color: "#6b5a4c",
+    fontSize: 14,
+    textAlign: "center",
   },
   loginShellContent: {
     flexGrow: 1,

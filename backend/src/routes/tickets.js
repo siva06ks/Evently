@@ -41,6 +41,27 @@ router.post("/", requireAuth, async (req, res) => {
       return res.status(404).json({ message: "Event not found" });
     }
 
+    // Guard against accidental rapid double-submits from flaky clients/buttons.
+    const existing = await pool.query(
+      `SELECT id, event_id, ticket_code, attendee_name, created_at
+       FROM tickets
+       WHERE user_id = $1 AND event_id = $2 AND attendee_name = $3
+         AND created_at > NOW() - INTERVAL '20 seconds'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [req.userId, eventId, attendeeName]
+    );
+    if (existing.rowCount > 0) {
+      const row = existing.rows[0];
+      return res.status(200).json({
+        id: row.id,
+        eventId: String(row.event_id),
+        ticketId: row.ticket_code,
+        attendeeName: row.attendee_name,
+        createdAt: row.created_at instanceof Date ? row.created_at.getTime() : Date.parse(row.created_at),
+      });
+    }
+
     const ticketCode = `TKT-${eventId}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 
     const result = await pool.query(

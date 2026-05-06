@@ -175,7 +175,9 @@ export const useWarmthStore = create<WarmthState>()((set, get) => ({
       attendeeName: data.attendeeName,
       createdAt: data.createdAt,
     };
-    set((s) => ({ tickets: [ticket, ...s.tickets] }));
+    set((s) => ({
+      tickets: [ticket, ...s.tickets.filter((t) => t.ticketId !== ticket.ticketId)],
+    }));
     return ticket;
   },
 
