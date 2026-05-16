@@ -17,7 +17,7 @@ function isRealCalendarDateYmd(ymd) {
 function validateCreateBody(body) {
   const title = typeof body.title === "string" ? body.title.trim() : "";
   const organizerEmail =
-    typeof body.organizerEmail === "string" ? body.organizerEmail.trim() : "";
+    typeof body.organizerEmail === "string" ? body.organizerEmail.trim().toLowerCase() : "";
   const date = typeof body.date === "string" ? body.date.trim() : "";
 
   const errors = [];
@@ -78,7 +78,7 @@ function validateRichCreate(body, identifier) {
   }
 
   let organizerEmail =
-    typeof body.organizerEmail === "string" ? body.organizerEmail.trim() : "";
+    typeof body.organizerEmail === "string" ? body.organizerEmail.trim().toLowerCase() : "";
   if (!organizerEmail && typeof identifier === "string" && identifier.trim()) {
     const idf = identifier.trim();
     if (EMAIL_RE.test(idf)) {
@@ -142,7 +142,7 @@ function validatePatchBody(body) {
 
   if (body.organizerEmail !== undefined) {
     const organizerEmail =
-      typeof body.organizerEmail === "string" ? body.organizerEmail.trim() : "";
+      typeof body.organizerEmail === "string" ? body.organizerEmail.trim().toLowerCase() : "";
     if (!EMAIL_RE.test(organizerEmail)) errors.push("organizerEmail must be valid");
     else patch.organizerEmail = organizerEmail;
   }
