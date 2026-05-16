@@ -14,15 +14,28 @@ import { isValidDate, isValidEmail, isValidEventTitle } from "../utils/regex";
 export function HomeScreen() {
   const { title, organizerEmail, date, setField, reset } = useEventDraftStore();
 
-  const isFormValid = useMemo(
-    () =>
-      isValidEventTitle(title) && isValidEmail(organizerEmail) && isValidDate(date),
+  const validationMessage = useMemo(
+    () => {
+      if (!isValidEventTitle(title)) {
+        return "Event title must be 3-60 letters, numbers or spaces.";
+      }
+
+      if (!isValidEmail(organizerEmail)) {
+        return "Organizer email must be a valid email address.";
+      }
+
+      if (!isValidDate(date)) {
+        return "Date must be a real date in YYYY-MM-DD format.";
+      }
+
+      return null;
+    },
     [title, organizerEmail, date]
   );
 
   const saveDraft = () => {
-    if (!isFormValid) {
-      Alert.alert("Invalid input", "Please fill all fields with valid values.");
+    if (validationMessage) {
+      Alert.alert("Invalid input", validationMessage);
       return;
     }
 
